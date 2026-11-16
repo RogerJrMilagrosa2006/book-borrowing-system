@@ -23,21 +23,21 @@ export type Database = {
         {
           id: string;
           full_name: string;
-          role: 'admin' | 'librarian';
+          role: 'librarian';
           active: boolean;
           created_at: string;
         },
         {
           id: string;
           full_name?: string;
-          role: 'admin' | 'librarian';
+          role: 'librarian';
           active?: boolean;
           created_at?: string;
         },
         {
           id?: string;
           full_name?: string;
-          role?: 'admin' | 'librarian';
+          role?: 'librarian';
           active?: boolean;
           created_at?: string;
         }
@@ -45,6 +45,7 @@ export type Database = {
       books: Table<
         {
           id: string;
+          owner_id: string | null;
           title: string;
           author: string;
           isbn: string | null;
@@ -56,6 +57,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           title: string;
           author: string;
           isbn?: string | null;
@@ -67,6 +69,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           title?: string;
           author?: string;
           isbn?: string | null;
@@ -80,6 +83,7 @@ export type Database = {
       borrowers: Table<
         {
           id: string;
+          owner_id: string | null;
           full_name: string;
           student_id: string | null;
           email: string | null;
@@ -90,6 +94,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           full_name: string;
           student_id?: string | null;
           email?: string | null;
@@ -100,6 +105,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           full_name?: string;
           student_id?: string | null;
           email?: string | null;
@@ -112,6 +118,7 @@ export type Database = {
       borrowings: Table<
         {
           id: string;
+          owner_id: string | null;
           book_id: string;
           borrower_id: string;
           borrowed_at: string;
@@ -123,6 +130,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           book_id: string;
           borrower_id: string;
           borrowed_at?: string;
@@ -134,6 +142,7 @@ export type Database = {
         },
         {
           id?: string;
+          owner_id?: string | null;
           book_id?: string;
           borrower_id?: string;
           borrowed_at?: string;

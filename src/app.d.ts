@@ -9,7 +9,7 @@ declare global {
     }
     interface PageData {
       user?: User | null;
-      profile?: { id: string; full_name: string; role: 'admin' | 'librarian'; active: boolean } | null;
+      profile?: { id: string; full_name: string; role: 'librarian'; active: boolean } | null;
     }
   }
 }

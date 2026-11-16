@@ -15,15 +15,15 @@ export const actions: Actions = {
     if (!email || !password) return { error: 'Enter your email and password.' };
 
     const { error } = await locals.supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: 'Unable to sign in. Check your credentials or ask your administrator.' };
+    if (error) return { error: 'Unable to sign in. Check your email and password, and confirm your email address if prompted.' };
 
     const { user } = await locals.safeGetSession();
     if (!user) return { error: 'Login succeeded but the session could not be verified. Please try again.' };
 
     const { data: profile } = await locals.supabase.from('profiles').select('active, role').eq('id', user.id).maybeSingle();
-    if (!profile || !profile.active || !['admin', 'librarian'].includes(profile.role)) {
+    if (!profile || !profile.active || profile.role !== 'librarian') {
       await locals.supabase.auth.signOut();
-      return { error: 'This account is not authorized. Ask an administrator to assign an active librarian/admin role.' };
+      return { error: 'This account does not have an active librarian profile. Please contact support.' };
     }
     throw redirect(303, '/dashboard');
   }

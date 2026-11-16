@@ -4,7 +4,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const { user } = await locals.safeGetSession();
   if (!user) throw redirect(303, '/login');
   const { data: profile } = await locals.supabase.from('profiles').select('active,role').eq('id', user.id).maybeSingle();
-  if (!profile?.active || !['admin','librarian'].includes(profile.role)) throw redirect(303, '/login');
+  if (!profile?.active || profile.role !== 'librarian') throw redirect(303, '/login');
   const [books, borrowers, loans] = await Promise.all([
     locals.supabase.from('books').select('id,title,author,total_copies,active').eq('active', true).order('title'),
     locals.supabase.from('borrowers').select('id,full_name,student_id,active').eq('active', true).order('full_name'),

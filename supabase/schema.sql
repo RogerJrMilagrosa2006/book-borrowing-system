@@ -1,21 +1,22 @@
--- LibraryDesk schema
--- Run once in Supabase SQL Editor on a new project.
+-- LibraryDesk schema and data-isolation migration.
+-- Run in the Supabase SQL Editor on a new or existing project.
 
 create extension if not exists pgcrypto;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null default 'Library Staff',
-  role text not null check (role in ('admin', 'librarian')),
+  role text not null check (role = 'librarian'),
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
 
 create table if not exists public.books (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   title text not null check (length(trim(title)) between 1 and 200),
   author text not null check (length(trim(author)) between 1 and 160),
-  isbn text unique,
+  isbn text,
   category text,
   total_copies integer not null default 1 check (total_copies >= 0 and total_copies <= 100000),
   active boolean not null default true,
@@ -25,8 +26,9 @@ create table if not exists public.books (
 
 create table if not exists public.borrowers (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   full_name text not null check (length(trim(full_name)) between 1 and 160),
-  student_id text unique,
+  student_id text,
   email text,
   phone text,
   active boolean not null default true,
@@ -36,6 +38,7 @@ create table if not exists public.borrowers (
 
 create table if not exists public.borrowings (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   book_id uuid not null references public.books(id) on delete restrict,
   borrower_id uuid not null references public.borrowers(id) on delete restrict,
   borrowed_at date not null default current_date,
@@ -46,6 +49,24 @@ create table if not exists public.borrowings (
   created_at timestamptz not null default now(),
   constraint valid_due_date check (due_date >= borrowed_at)
 );
+
+-- Keep existing rows intact. Rows without an owner stay inaccessible until
+-- their owner can be assigned; all new rows use the authenticated user by default.
+alter table public.books add column if not exists owner_id uuid references auth.users(id) on delete cascade;
+alter table public.borrowers add column if not exists owner_id uuid references auth.users(id) on delete cascade;
+alter table public.borrowings add column if not exists owner_id uuid references auth.users(id) on delete cascade;
+alter table public.books alter column owner_id set default auth.uid();
+alter table public.borrowers alter column owner_id set default auth.uid();
+alter table public.borrowings alter column owner_id set default auth.uid();
+
+alter table public.profiles drop constraint if exists profiles_role_check;
+update public.profiles set role = 'librarian' where role <> 'librarian';
+alter table public.profiles add constraint profiles_role_check check (role = 'librarian');
+
+alter table public.books drop constraint if exists books_isbn_key;
+alter table public.borrowers drop constraint if exists borrowers_student_id_key;
+create unique index if not exists books_owner_isbn_key on public.books(owner_id, isbn) where isbn is not null;
+create unique index if not exists borrowers_owner_student_id_key on public.borrowers(owner_id, student_id) where student_id is not null;
 
 create index if not exists borrowings_book_active_idx on public.borrowings(book_id) where returned_at is null;
 create index if not exists borrowings_borrower_idx on public.borrowings(borrower_id);
@@ -79,12 +100,38 @@ as $$
     select 1 from public.profiles p
     where p.id = (select auth.uid())
       and p.active = true
-      and p.role in ('admin', 'librarian')
+      and p.role = 'librarian'
   );
 $$;
 
 revoke all on function public.is_library_staff() from public;
 grant execute on function public.is_library_staff() to authenticated;
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.profiles (id, full_name, role, active)
+  values (
+    new.id,
+    coalesce(nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''), 'Librarian'),
+    'librarian',
+    true
+  )
+  on conflict (id) do update
+  set full_name = excluded.full_name;
+  return new;
+end;
+$$;
+
+revoke all on function public.handle_new_user() from public, anon, authenticated;
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+after insert on auth.users
+for each row execute function public.handle_new_user();
 
 alter table public.profiles enable row level security;
 alter table public.books enable row level security;
@@ -93,31 +140,28 @@ alter table public.borrowings enable row level security;
 
 drop policy if exists "staff can read profiles" on public.profiles;
 create policy "staff can read profiles" on public.profiles
-for select to authenticated using (public.is_library_staff());
-
--- Staff roles are assigned by an administrator in the Supabase SQL editor.
--- No client-side role changes are granted, which prevents privilege escalation.
+for select to authenticated using (id = (select auth.uid()));
 
 drop policy if exists "staff read books" on public.books;
-create policy "staff read books" on public.books for select to authenticated using (public.is_library_staff());
+create policy "staff read books" on public.books for select to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff insert books" on public.books;
-create policy "staff insert books" on public.books for insert to authenticated with check (public.is_library_staff());
+create policy "staff insert books" on public.books for insert to authenticated with check (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff update books" on public.books;
-create policy "staff update books" on public.books for update to authenticated using (public.is_library_staff()) with check (public.is_library_staff());
+create policy "staff update books" on public.books for update to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff()) with check (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff delete books" on public.books;
-create policy "staff delete books" on public.books for delete to authenticated using (public.is_library_staff());
+create policy "staff delete books" on public.books for delete to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff());
 
 drop policy if exists "staff read borrowers" on public.borrowers;
-create policy "staff read borrowers" on public.borrowers for select to authenticated using (public.is_library_staff());
+create policy "staff read borrowers" on public.borrowers for select to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff insert borrowers" on public.borrowers;
-create policy "staff insert borrowers" on public.borrowers for insert to authenticated with check (public.is_library_staff());
+create policy "staff insert borrowers" on public.borrowers for insert to authenticated with check (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff update borrowers" on public.borrowers;
-create policy "staff update borrowers" on public.borrowers for update to authenticated using (public.is_library_staff()) with check (public.is_library_staff());
+create policy "staff update borrowers" on public.borrowers for update to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff()) with check (owner_id = (select auth.uid()) and public.is_library_staff());
 drop policy if exists "staff delete borrowers" on public.borrowers;
-create policy "staff delete borrowers" on public.borrowers for delete to authenticated using (public.is_library_staff());
+create policy "staff delete borrowers" on public.borrowers for delete to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff());
 
 drop policy if exists "staff read borrowings" on public.borrowings;
-create policy "staff read borrowings" on public.borrowings for select to authenticated using (public.is_library_staff());
+create policy "staff read borrowings" on public.borrowings for select to authenticated using (owner_id = (select auth.uid()) and public.is_library_staff());
 -- Direct inserts/updates/deletes are intentionally not granted to clients.
 revoke insert, update, delete on public.borrowings from anon, authenticated;
 grant select on public.borrowings to authenticated;
@@ -132,7 +176,7 @@ as $$
 declare active_count integer;
 begin
   select count(*) into active_count from public.borrowings b
-  where b.book_id = old.id and b.returned_at is null;
+  where b.book_id = old.id and b.owner_id = old.owner_id and b.returned_at is null;
   if new.total_copies < active_count then
     raise exception 'Total copies cannot be less than the number currently on loan (%).', active_count;
   end if;
@@ -172,20 +216,24 @@ begin
 
   -- Lock book row so simultaneous issues cannot exceed inventory.
   select b.total_copies, b.active into v_total, v_active
-  from public.books b where b.id = p_book_id for update;
+  from public.books b where b.id = p_book_id and b.owner_id = (select auth.uid()) for update;
   if not found then raise exception 'Book not found.'; end if;
   if not v_active then raise exception 'This book is archived and cannot be borrowed.'; end if;
 
-  select br.active into v_borrower_active from public.borrowers br where br.id = p_borrower_id;
+  select br.active into v_borrower_active
+  from public.borrowers br
+  where br.id = p_borrower_id and br.owner_id = (select auth.uid());
   if not found then raise exception 'Borrower not found.'; end if;
   if not v_borrower_active then raise exception 'This borrower is inactive.'; end if;
 
   select count(*) into v_out from public.borrowings b
-  where b.book_id = p_book_id and b.returned_at is null;
+  where b.book_id = p_book_id
+    and b.owner_id = (select auth.uid())
+    and b.returned_at is null;
   if v_out >= v_total then raise exception 'No available copies remain for this book.'; end if;
 
-  insert into public.borrowings(book_id, borrower_id, borrowed_at, due_date, notes, created_by)
-  values (p_book_id, p_borrower_id, p_borrowed_at, p_due_date, nullif(trim(p_notes), ''), (select auth.uid()))
+  insert into public.borrowings(owner_id, book_id, borrower_id, borrowed_at, due_date, notes, created_by)
+  values ((select auth.uid()), p_book_id, p_borrower_id, p_borrowed_at, p_due_date, nullif(trim(p_notes), ''), (select auth.uid()))
   returning id into v_id;
   return v_id;
 end;
@@ -204,10 +252,13 @@ begin
 
   update public.borrowings
   set returned_at = now()
-  where id = p_borrowing_id and returned_at is null;
+  where id = p_borrowing_id and owner_id = (select auth.uid()) and returned_at is null;
 
   if not found then
-    if exists (select 1 from public.borrowings where id = p_borrowing_id) then
+    if exists (
+      select 1 from public.borrowings
+      where id = p_borrowing_id and owner_id = (select auth.uid())
+    ) then
       raise exception 'This book has already been returned.';
     else
       raise exception 'Borrowing record not found.';
